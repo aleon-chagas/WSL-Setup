@@ -1,0 +1,416 @@
+---
+- name: Setup WSL2 Ubuntu 24.04 LTS (DevOps/SRE)
+  hosts: localhost
+  connection: local
+  become: true
+
+  vars:
+    user_name: "{{ lookup('env', 'USER') }}"
+    user_home: "/home/{{ user_name }}"
+    base_packages:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+      - software-properties-common
+      - nala
+      - gpg
+      - build-essential
+    util_packages:
+      - wget
+      - vim
+      - git
+      - jq
+      - httpie
+      - htop
+      - iftop
+      - iotop
+      - glances
+      - ncdu
+      - tree
+      - bash-completion
+      - zsh
+      - plocate
+      - mtr
+      - nmap
+      - neofetch
+      - net-tools
+      - unzip
+      - tmux
+      - dnsutils
+      - btop
+      - speedtest-cli
+      - mysql-client
+      - ansible-lint
+      - fonts-powerline
+      - fonts-firacode
+      - fzf
+      - command-not-found
+      - util-linux
+
+  pre_tasks:
+    - name: Update APT cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      tags: [always]
+
+    - name: Install prerequisite packages
+      apt:
+        name:
+          - curl
+          - gpg
+        state: present
+      tags: [always]
+
+  tasks:
+    ###########################################################################
+    # System Base
+    ###########################################################################
+    - name: Install base and utility packages
+      apt:
+        name: "{{ base_packages + util_packages }}"
+        state: present
+        update_cache: yes
+      tags: [base]
+
+    - name: Upgrade all system packages
+      apt:
+        upgrade: dist
+      tags: [base]
+
+    ###########################################################################
+    # Kubernetes
+    ###########################################################################
+    - name: Kubernetes Tools Installation
+      block:
+        - name: Download Kubernetes GPG key
+          get_url:
+            url: https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key
+            dest: /etc/apt/keyrings/kubernetes-apt-keyring.asc
+            mode: '0644'
+
+        - name: Add Kubernetes repository
+          apt_repository:
+            repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /"
+            filename: kubernetes
+            state: present
+            update_cache: yes
+
+        - name: Install kubectl
+          apt:
+            name: kubectl
+            state: present
+
+        - name: Download K9s .deb package
+          get_url:
+            url: https://github.com/derailed/k9s/releases/latest/download/k9s_linux_amd64.deb
+            dest: /tmp/k9s_linux_amd64.deb
+
+        - name: Install K9s
+          apt:
+            deb: /tmp/k9s_linux_amd64.deb
+
+        - name: Remove K9s .deb file
+          file:
+            path: /tmp/k9s_linux_amd64.deb
+            state: absent
+
+        - name: Install kubectx
+          get_url:
+            url: https://github.com/ahmetb/kubectx/releases/latest/download/kubectx
+            dest: /usr/local/bin/kubectx
+            mode: '0755'
+
+        - name: Install kubens
+          get_url:
+            url: https://github.com/ahmetb/kubectx/releases/latest/download/kubens
+            dest: /usr/local/bin/kubens
+            mode: '0755'
+      tags: [kubernetes]
+
+    ###########################################################################
+    # Cloud CLIs and DevOps Tools
+    ###########################################################################
+    - name: DevOps Tools Installation
+      block:
+        - name: Add Microsoft GPG key
+          shell: "curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /etc/apt/keyrings/microsoft.gpg"
+          args:
+            creates: /etc/apt/keyrings/microsoft.gpg
+          changed_when: false
+
+        - name: Add PowerShell repository
+          apt_repository:
+            repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/ubuntu/24.04/prod noble main"
+            state: present
+            filename: powershell
+            update_cache: yes
+
+        - name: Install PowerShell
+          apt:
+            name: powershell
+            state: present
+
+        - name: Install Azure CLI
+          shell: curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+          args:
+            creates: /usr/bin/az
+
+        - name: Install AWS CLI v2
+          shell: |
+            curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
+            unzip -q -o /tmp/awscliv2.zip -d /tmp/aws-cli-install
+            /tmp/aws-cli-install/aws/install --update
+            rm -rf /tmp/awscliv2.zip /tmp/aws-cli-install
+          args:
+            creates: /usr/local/bin/aws
+
+        - name: Install yq
+          get_url:
+            url: https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+            dest: /usr/local/bin/yq
+            mode: '0755'
+      tags: [devtools]
+
+    ###########################################################################
+    # User Environment (Oh-My-Zsh and Powerlevel10k)
+    ###########################################################################
+    - name: Install Oh-My-Zsh
+      shell: |
+        CHSH=no RUNZSH=no sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" '' --unattended
+      args:
+        creates: "{{ user_home }}/.oh-my-zsh"
+      become_user: "{{ user_name }}"
+      tags: [user_env]
+
+    - name: Clone Powerlevel10k into Oh-My-Zsh themes directory
+      git:
+        repo: https://github.com/romkatv/powerlevel10k.git
+        dest: "{{ user_home }}/.oh-my-zsh/custom/themes/powerlevel10k"
+        version: master
+        update: no
+      become_user: "{{ user_name }}"
+      tags: [user_env]
+
+    - name: Configure Powerlevel10k as theme in .zshrc
+      lineinfile:
+        path: "{{ user_home }}/.zshrc"
+        regexp: '^ZSH_THEME='
+        line: 'ZSH_THEME="powerlevel10k/powerlevel10k"'
+        create: yes
+      become_user: "{{ user_name }}"
+      tags: [user_env]
+
+    - name: Change shell to ZSH
+      user:
+        name: "{{ user_name }}"
+        shell: /bin/zsh
+      tags: [user_env]
+
+    - name: Clone zsh-syntax-highlighting plugin
+      git:
+        repo: https://github.com/zsh-users/zsh-syntax-highlighting.git
+        dest: "{{ user_home }}/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting"
+        version: master
+        update: no
+      become_user: "{{ user_name }}"
+      tags: [user_env]
+
+    - name: Clone zsh-autosuggestions plugin
+      git:
+        repo: https://github.com/zsh-users/zsh-autosuggestions.git
+        dest: "{{ user_home }}/.oh-my-zsh/custom/plugins/zsh-autosuggestions"
+        version: master
+        update: no
+      become_user: "{{ user_name }}"
+      tags: [user_env]
+
+    - name: Clone k plugin
+      git:
+        repo: https://github.com/supercrabtree/k.git
+        dest: "{{ user_home }}/.oh-my-zsh/custom/plugins/k"
+        version: master
+        update: no
+      become_user: "{{ user_name }}"
+      tags: [user_env]
+
+    - name: Clone zsh-completions plugin
+      git:
+        repo: https://github.com/zsh-users/zsh-completions.git
+        dest: "{{ user_home }}/.oh-my-zsh/custom/plugins/zsh-completions"
+        version: master
+        update: no
+      become_user: "{{ user_name }}"
+      tags: [user_env]
+
+    ###########################################################################
+    # Docker, Terraform, Vagrant and Minikube Installation
+    ###########################################################################
+    - name: Docker, Terraform, Vagrant and Minikube Installation
+      block:
+        - name: Install Docker dependencies
+          apt:
+            name:
+              - ca-certificates
+              - curl
+              - gnupg
+              - lsb-release
+            state: present
+            update_cache: yes
+          tags: [docker]
+
+        - name: Remove old Docker versions
+          apt:
+            name:
+              - docker
+              - docker-engine
+              - docker.io
+              - containerd
+              - runc
+            state: absent
+            update_cache: yes
+          tags: [docker]
+
+        - name: Check if Docker GPG file exists
+          stat:
+            path: /etc/apt/keyrings/docker.gpg
+          register: docker_gpg
+
+        - name: Check if Docker repository exists
+          stat:
+            path: /etc/apt/sources.list.d/docker.list
+          register: docker_repo
+
+        - name: Remove Docker GPG file if it exists
+          file:
+            path: /etc/apt/keyrings/docker.gpg
+            state: absent
+          when: docker_gpg.stat.exists
+          tags: [docker]
+
+        - name: Remove Docker repository if it exists
+          file:
+            path: /etc/apt/sources.list.d/docker.list
+            state: absent
+          when: docker_repo.stat.exists
+          tags: [docker]
+
+        - name: Update apt cache
+          apt:
+            update_cache: yes
+          tags: [docker, update]
+
+        - name: Pause for 10 seconds to stabilize
+          pause:
+            seconds: 10
+          tags: [docker, update]
+
+        - name: Install necessary dependencies for Docker
+          apt:
+            name:
+              - ca-certificates
+              - curl
+              - gnupg
+              - lsb-release
+            state: latest
+            update_cache: yes
+          tags: [docker]
+
+        - name: Add official Docker GPG key
+          shell: |
+            mkdir -p /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+          tags: [docker]
+
+        - name: Adjust Docker GPG key permissions
+          shell: chmod a+r /etc/apt/keyrings/docker.gpg
+          tags: [docker]
+
+        - name: Add official Docker repository
+          shell: |
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+          tags: [docker]
+
+        - name: Pause for 10 seconds to ensure apt recognizes the new repository
+          pause:
+            seconds: 10
+          tags: [docker, update]
+
+        - name: Update apt cache
+          apt:
+            update_cache: yes
+          tags: [docker, update]
+
+        - name: Pause for an extra 20 seconds for stability
+          pause:
+            seconds: 20
+          tags: [docker, update]
+
+        - name: Install Docker Engine and components
+          apt:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+              - docker-compose-plugin
+            state: latest
+            update_cache: yes
+          tags: [docker]
+
+        - name: Enable and start Docker service
+          service:
+            name: docker
+            enabled: yes
+            state: started
+          tags: [docker]
+
+        - name: Install Terraform
+          shell: |
+            wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor > /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com focal main" | tee /etc/apt/sources.list.d/hashicorp.list
+            apt update
+            apt install -y terraform
+          args:
+            creates: /usr/bin/terraform
+          tags: [terraform]
+
+        - name: Install Vagrant
+          shell: |
+            wget -O - https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release || lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+            apt update
+            apt install vagrant -y
+          args:
+            creates: /usr/bin/vagrant
+          tags: [vagrant]
+
+        - name: Download Minikube binary
+          get_url:
+            url: https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+            dest: /usr/local/bin/minikube
+            mode: '0755'
+          tags: [minikube]
+
+        - name: Verify Minikube installation
+          command: minikube version
+          register: minikube_version
+          failed_when: minikube_version.rc != 0
+          tags: [minikube]
+
+    ###########################################################################
+    # Finalization
+    ###########################################################################
+    - name: Finalization Tasks
+      block:
+        - name: Update locate database
+          command: updatedb
+          changed_when: false
+          failed_when: false
+
+        - name: Clean up unnecessary packages
+          apt:
+            autoclean: yes
+            autoremove: yes
+      tags: [cleanup]
